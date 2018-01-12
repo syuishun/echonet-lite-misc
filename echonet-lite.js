@@ -51,9 +51,11 @@ var EL = {
   EL_cls: null,
   Node_details:	{
 	  "80": [0x30],
-	  "82": [0x01, 0x0a, 0x01, 0x00], // EL version, 1.1
-	  "83": [0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // identifier
-	  "8a": [0x00, 0x00, 0x77], // maker code
+	  "82": [0x01, 0x0b, 0x01, 0x00], // version 1.12
+	  //"83": [0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // identifier
+	  //"8a": [0x00, 0x00, 0x00], // maker code
+          //"83": [0xfe, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x0e, 0xf0, 0x01, 0x00, 0x0c, 0x29, 0xff, 0xfe, 0x42, 0xc1, 0xa1], // identifier
+          //"8a": [0x00, 0x00, 0x0b], // maker code
 	  "9d": [0x02, 0x80, 0xd5],       // inf map, 1 Byte目は個数
 	  "9e": [0x00],                 // set map, 1 Byte目は個数
 	  "9f": [0x09, 0x80, 0x82, 0x83, 0x8a, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7], // get map, 1 Byte目は個数
@@ -71,9 +73,21 @@ var EL = {
 
 
 // 初期化，バインド
-EL.initialize = function ( objList, userfunc, ipVer ) {
-
+EL.initialize = function (objList, ipVer, makerCode, macAddress, userfunc) {
 	EL.isIPv6 = (ipVer == 6); // IPv6 flag
+
+	// maker code
+	EL.Node_details["8a"] = EL.toHexArray(makerCode);
+
+	// identifier
+	ident = [0xfe].concat(EL.Node_details["8a"]);
+	ident.push(0x00, 0x00);
+        ident.push(0x0e, 0xf0, 0x01); // Node Profile
+	ident = ident.concat(EL.toHexArray(macAddress.substr(0, 6)));
+	ident.push(0xff, 0xfe);
+	ident = ident.concat(EL.toHexArray(macAddress.substr(6)));
+	EL.Node_details["83"] = ident;
+	// console.log(ident);
 
 	// オブジェクトリストを確保
 	EL.EL_obj = objList;
@@ -104,20 +118,40 @@ EL.initialize = function ( objList, userfunc, ipVer ) {
 	v.unshift( EL.EL_cls.length );
 	EL.Node_details["d7"] = Array.prototype.concat.apply([], v);  // D7はノードプロファイル入らない
 
-	// EL受け取るようのUDP
-	var sock = dgram.createSocket(EL.isIPv6 ? "udp6" : "udp4", function (msg, rinfo) {
-		EL.returner( msg, rinfo, userfunc );
+	// EL受け取り用のUDP
+	// var sock = dgram.createSocket(EL.isIPv6 ? "udp6" : "udp4", function (msg, rinfo) {
+	// 	EL.returner( msg, rinfo, userfunc );
+	// 	console.log(rinfo);
+	// 	console.log(msg);
+	// });
+
+	// // マルチキャスト設定
+	// sock.bind( EL.EL_port, EL.isIPv6 ? '::' : '0.0.0.0', function() {
+	// 	sock.setMulticastLoopback( true );
+	// 	sock.addMembership( EL.isIPv6 ? EL.EL_Multi6 : EL.EL_Multi );
+	// 	// console.log( "EL_port bind OK!" );
+	// });
+
+	// EL受け取り用のUDP
+	var sock = dgram.createSocket(EL.isIPv6 ? "udp6" : "udp4");
+	var listenaddr = null;
+	sock.on('listening', function () {
+		// var address = sock.address();
+		// console.log('UDP Client listening on ' + address.address + ":" + address.port);
+
+		// sock.setBroadcast(true)
+		// sock.setMulticastTTL(128); 
+	 	sock.setMulticastLoopback(true);
+	 	sock.addMembership(EL.isIPv6 ? EL.EL_Multi6 : EL.EL_Multi);
 	});
 
-	// マルチキャスト設定
-	sock.bind( EL.EL_port, EL.isIPv6 ? '::' : '0.0.0.0', function() {
-		sock.setMulticastLoopback( true );
-		sock.addMembership( EL.isIPv6 ? EL.EL_Multi6 : EL.EL_Multi );
-		// console.log( "EL_port bind OK!" );
+	sock.on('message', function (msg, rinfo) {   
+	 	EL.returner(msg, rinfo, userfunc);
 	});
 
+	sock.bind(EL.EL_port);	
 
-	// 初期化終わったのでノードのINFをだす
+	// 初期化が終わったのでノードのINFを送出
 	EL.sendOPC1( EL.isIPv6 ? EL.EL_Multi6 : EL.EL_Multi, [0x0e,0xf0,0x01], [0x0e,0xf0,0x01], 0x73, 0xd5, EL.Node_details["d5"] );
 
 	return sock;
@@ -345,7 +379,8 @@ EL.sendArray = function( ip, array ) {
 
 
 // ELの非常に典型的なOPC一個でやる
-EL.sendOPC1 = function( ip, seoj, deoj, esv, epc, edt) {
+//EL.sendOPC1 = function( ip, seoj, deoj, esv, epc, edt) {
+EL.sendOPC1 = function(ip, seoj, deoj, esv, epc, edt, tid = "0000") {
 
 	if( typeof(seoj) == "string" ) {
 		seoj = EL.toHexArray(seoj);
@@ -369,12 +404,17 @@ EL.sendOPC1 = function( ip, seoj, deoj, esv, epc, edt) {
 		edt = EL.toHexArray(edt);
 	}
 
+	if( typeof(tid) == "string" ) {
+		tid = EL.toHexArray(tid);
+	}
+
 	var buffer;
 
 	if( esv == 0x62 ) { // get
 		buffer = new Buffer([
 			0x10, 0x81,
-			0x00, 0x00,
+			//0x00, 0x00,
+			tid[0], tid[1], 
 			seoj[0], seoj[1], seoj[2],
 			deoj[0], deoj[1], deoj[2],
 			esv,
@@ -384,7 +424,8 @@ EL.sendOPC1 = function( ip, seoj, deoj, esv, epc, edt) {
 	}else{
 		buffer = new Buffer([
 			0x10, 0x81,
-			0x00, 0x00,
+			//0x00, 0x00,
+			tid[0], tid[1], 
 			seoj[0], seoj[1], seoj[2],
 			deoj[0], deoj[1], deoj[2],
 			esv,
@@ -399,13 +440,55 @@ EL.sendOPC1 = function( ip, seoj, deoj, esv, epc, edt) {
 	EL.sendBase( ip, buffer );
 };
 
-
-
 // ELの非常に典型的な送信3 文字列タイプ
 EL.sendString = function( ip, string ) {
 	// 送信する
 	EL.sendBase( ip, new Buffer( EL.toHexArray(string) ) );
 };
+
+// Get_Res または Get_SNA の送信
+EL.sendGetRes = function(ip, seoj, deoj, els, node_equip_obj) {
+
+        var retsna = false;
+	var props = [];
+	var resdata = [];
+
+	for( var epc in els.DETAILs ) {
+		props.push((EL.toHexArray(epc))[0]); // EPC
+		if(node_equip_obj[epc]) { // 持ってるEPCのとき
+			props.push(node_equip_obj[epc].length); // PDC
+			props = props.concat(node_equip_obj[epc]);	// EDT
+		} else {
+			retsna = true; // 持っていないEPCが含まれているとき、SNA(一部応答)
+			props.push(0x00); // PDC=0, EDT:none
+		}
+	}
+
+	if( typeof(seoj) == "string" ) {
+		seoj = EL.toHexArray(seoj);
+	}
+
+	if( typeof(deoj) == "string" ) {
+		deoj = EL.toHexArray(deoj);
+	}
+
+	resdata.push(0x10, 0x81);
+	var tid = EL.toHexArray(els.TID);
+	resdata.push(tid[0], tid[1]);
+	resdata.push(seoj[0], seoj[1], seoj[2]);
+	resdata.push(deoj[0], deoj[1], deoj[2]);
+	if (!retsna) {
+		resdata.push(0x72);	// Get_Res
+	} else {
+		resdata.push(0x52);	// Get_SNA
+	}
+	resdata.push((EL.toHexArray(els.OPC))[0]); 
+	resdata = resdata.concat(props);
+
+	var buffer = new Buffer(resdata);
+	EL.sendBase(ip, buffer);
+};
+
 
 
 //////////////////////////////////////////////////////////////////////
@@ -454,20 +537,22 @@ EL.returner = function( bytes, rinfo, userfunc ) {
 				break;
 
 			  case EL.GET: // 0x62
-				// console.log( "EL.returner: get prop. of Node profile.");
-				for( var epc in els.DETAILs ) {
-					if( EL.Node_details[epc] ) { // 持ってるEPCのとき
-						EL.sendOPC1( rinfo.address, [0x0e, 0xf0, 0x01], EL.toHexArray(els.SEOJ), 0x72, EL.toHexArray(epc), EL.Node_details[epc] );
-					} else { // 持っていないEPCのとき, SNA
-						EL.sendOPC1( rinfo.address, [0x0e, 0xf0, 0x01], EL.toHexArray(els.SEOJ), 0x52, EL.toHexArray(epc), [0x00] );
-					}
-				}
+				// // console.log( "EL.returner: get prop. of Node profile.");
+				// for( var epc in els.DETAILs ) {
+				// 	if( EL.Node_details[epc] ) { // 持ってるEPCのとき
+				// 		EL.sendOPC1(rinfo.address, [0x0e, 0xf0, 0x01], EL.toHexArray(els.SEOJ), 0x72, EL.toHexArray(epc), EL.Node_details[epc], els.TID);
+				// 	} else { // 持っていないEPCのとき, SNA
+				// 		EL.sendOPC1(rinfo.address, [0x0e, 0xf0, 0x01], EL.toHexArray(els.SEOJ), 0x52, EL.toHexArray(epc), [0x00], els.TID);
+				// 	}
+				// }
+				EL.sendGetRes(rinfo.address, [0x0e, 0xf0, 0x01], EL.toHexArray(els.SEOJ), els, EL.Node_details);
 				break;
 
 			  case EL.INF_REQ: // 0x63
 				if( els.DETAILs["d5"] == "00" ) {
 					// console.log( "EL.returner: Ver1.0 INF_REQ.");
-					EL.sendOPC1( EL.isIPv6 ? EL.EL_Multi6 : EL.EL_Multi, [0x0e, 0xf0, 0x01], EL.toHexArray(els.SEOJ), 0x73, 0xd5, EL.Node_details["d5"] );
+					//EL.sendOPC1( EL.isIPv6 ? EL.EL_Multi6 : EL.EL_Multi, [0x0e, 0xf0, 0x01], EL.toHexArray(els.SEOJ), 0x73, 0xd5, EL.Node_details["d5"] );
+					EL.sendOPC1(EL.isIPv6 ? EL.EL_Multi6 : EL.EL_Multi, [0x0e, 0xf0, 0x01], EL.toHexArray(els.SEOJ), 0x73, 0xd5, EL.Node_details["d5"], els.TID);
 				}
 				break;
 
@@ -565,9 +650,9 @@ EL.returner = function( bytes, rinfo, userfunc ) {
 		// 機器オブジェクトに関してはユーザー関数に任す
 		userfunc( rinfo, els );
 	} catch(e) {
-		// console.error("EL.returner(): received packet error.");
-		// console.error( bytes );
-		userfunc( rinfo, els, e );
+		console.error("EL.returner(): received packet error.");
+		console.error( bytes );
+		// userfunc( rinfo, els, e );
 	}
 
 };
